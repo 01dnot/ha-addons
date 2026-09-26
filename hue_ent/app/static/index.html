@@ -44,6 +44,12 @@
     width: 100%; background: var(--card2); border: 1px solid var(--line); color: var(--text);
     border-radius: 6px; padding: 5px 8px; font: inherit; margin-top: 3px; }
   .ctl input[type=range] { width: 100%; margin-top: 8px; accent-color: var(--accent); }
+  .chips { display: flex; gap: 6px; margin-top: 4px; }
+  .chip { flex: 1; padding: 6px 4px; font-size: 12.5px; border-radius: 6px;
+          background: var(--card2); color: var(--text); border: 1px solid var(--line);
+          cursor: pointer; font: inherit; font-size: 12.5px; }
+  .chip:hover { border-color: var(--accent); }
+  .chip.active { background: var(--accent); border-color: var(--accent); color: #fff; }
   .foot { display: flex; align-items: center; gap: 10px; margin-top: 14px; }
   .foot .spacer { flex: 1; }
   .hint { color: var(--dim); font-size: 12px; }
@@ -79,8 +85,20 @@
 "use strict";
 let STATE = null;
 const $ = (sel, el) => (el || document).querySelector(sel);
+const $$ = (sel, el) => (el || document).querySelectorAll(sel);
 const esc = (t) => String(t).replace(/[&<>"']/g, (c) =>
   ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[c]));
+
+// Preset name for a brightness_scale value, or "Egendefinert X%" when it
+// doesn't match any preset (so the slider can be nudged for fine-tune
+// without losing what mode was intended).
+const briLabel = (bs) => {
+  const pct = Math.round(bs * 100);
+  if (Math.abs(bs - 0.7) < 0.05) return "Rolig · " + pct + "%";
+  if (Math.abs(bs - 1.2) < 0.05) return "Medium · " + pct + "%";
+  if (Math.abs(bs - 2.0) < 0.05) return "Livlig · " + pct + "%";
+  return "Egendefinert · " + pct + "%" + (bs > 1 ? " (boostet)" : "");
+};
 
 function toast(text) {
   const el = $("#msg");
@@ -193,7 +211,12 @@ function card(room) {
     <div class="controls">
       <label class="ctl">Target fps (5–25)
         <input type="number" class="fps" min="5" max="25" value="${room.fps}"></label>
-      <label class="ctl">Brightness <span class="bval">${Math.round(room.brightness_scale * 100)}%${room.brightness_scale > 1 ? " (boosted)" : ""}</span>
+      <label class="ctl">Livlighet <span class="bval">${briLabel(room.brightness_scale)}</span>
+        <div class="chips">
+          <button type="button" class="chip preset" data-bs="0.7">Rolig</button>
+          <button type="button" class="chip preset" data-bs="1.2">Medium</button>
+          <button type="button" class="chip preset" data-bs="2.0">Livlig</button>
+        </div>
         <input type="range" class="bri" min="5" max="300" value="${Math.round(room.brightness_scale * 100)}"></label>
       <label class="ctl">Pause while streaming (entities, comma-separated)
         <input type="text" class="pause" value="${room.pause_entities.join(", ")}"></label>
@@ -238,10 +261,23 @@ function card(room) {
 
   $(".en", el).onchange = (ev) => { edit.enabled = ev.target.checked; dirty(); };
   $(".fps", el).onchange = (ev) => { edit.fps = Math.min(25, Math.max(5, +ev.target.value || 20)); dirty(); };
+  const refreshBriUi = () => {
+    $(".bval", el).textContent = briLabel(edit.brightness_scale);
+    $$(".preset", el).forEach(chip => {
+      chip.classList.toggle("active",
+        Math.abs(edit.brightness_scale - (+chip.dataset.bs)) < 0.05);
+    });
+  };
+  refreshBriUi();
   $(".bri", el).oninput = (ev) => {
     edit.brightness_scale = (+ev.target.value) / 100;
-    $(".bval", el).textContent = ev.target.value + "%"; dirty();
+    refreshBriUi(); dirty();
   };
+  $$(".preset", el).forEach(chip => chip.onclick = (ev) => {
+    edit.brightness_scale = +ev.target.dataset.bs;
+    $(".bri", el).value = Math.round(edit.brightness_scale * 100);
+    refreshBriUi(); dirty();
+  });
   $(".pause", el).onchange = (ev) => {
     edit.pause_entities = ev.target.value.split(",").map(s => s.trim()).filter(Boolean); dirty();
   };
