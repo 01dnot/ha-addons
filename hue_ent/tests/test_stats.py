@@ -49,7 +49,7 @@ def test_a_stale_window_reports_zero():
 
 def test_the_listener_counts_frames_and_reports_a_rate():
     seen = []
-    proto = main_mod.DdpProtocol(2, lambda: seen.append(1))
+    proto = main_mod.DdpProtocol(2, lambda addr=None: seen.append(1))
 
     for _ in range(10):
         proto.datagram_received(ddp_frame([(1, 2, 3), (4, 5, 6)]), ("127.0.0.1", 4048))
@@ -62,7 +62,7 @@ def test_the_listener_counts_frames_and_reports_a_rate():
 
 
 def test_a_short_datagram_is_ignored_entirely():
-    proto = main_mod.DdpProtocol(4, lambda: None)
+    proto = main_mod.DdpProtocol(4, lambda addr=None: None)
     proto.datagram_received(DDP_HEADER + b"\x01\x02\x03", ("127.0.0.1", 4048))
     assert (proto.frames_rx, proto.latest, proto.rx_fps) == (0, None, 0.0)
 

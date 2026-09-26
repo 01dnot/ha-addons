@@ -207,7 +207,7 @@ class DdpProtocol(asyncio.DatagramProtocol):
         self.last_rx = time.monotonic()
         self.frames_rx += 1
         self._arrivals.append(self.last_rx)
-        self.on_activity()
+        self.on_activity(addr)
 
     @property
     def rx_fps(self) -> float:
@@ -234,13 +234,20 @@ class ZoneRunner:
         self._suppress_auto = False
         self._prev_rx = 0.0
 
-    def on_ddp_activity(self) -> None:
+    def on_ddp_activity(self, addr=None) -> None:
         now = time.monotonic()
         stream_gap = now - self._prev_rx if self._prev_rx else float("inf")
         self._prev_rx = now
         if self._suppress_auto and stream_gap > 5.0:
             LOG.info("[%s] new DDP stream detected - auto-start re-enabled", self.zone.name)
             self._suppress_auto = False
+        # Loopback = LedFX on same host (whose auto-provisioning we may be
+        # running). Anything else means HyperHDR / piccap / a remote LedFX -
+        # the user brought their own DDP source, so we should stop the
+        # provisioning retry loop instead of spamming the log with
+        # "LedFX not reachable" every 30s.
+        if addr and addr[0] not in ("127.0.0.1", "::1"):
+            self.bridge.notify_external_ddp(addr[0])
         if not self.armed and self.zone.auto_start and not self._suppress_auto:
             self.bridge.schedule_arm(self.zone.slug, reason="ddp")
 
@@ -494,6 +501,7 @@ class Bridge:
         self._known_slugs: set[str] = set()
         self.provision_task: asyncio.Task | None = None
         self._rebuild_lock = asyncio.Lock()
+        self._external_ddp_source: str | None = None
 
     # -- zone assembly / live rebuild -------------------------------------
 
@@ -558,10 +566,31 @@ class Bridge:
             self._known_slugs |= set(self.zones)
             self._kick_provisioning()
 
+    def notify_external_ddp(self, src_ip: str) -> None:
+        """A non-loopback DDP source is delivering frames - the user has
+        their own sender (HyperHDR, piccap, remote LedFX). Stop the LedFX
+        auto-provisioning loop so the log doesn't fill with reachability
+        errors while their real setup works fine."""
+        if self._external_ddp_source == src_ip:
+            return
+        self._external_ddp_source = src_ip
+        if self.provision_task is not None and not self.provision_task.done():
+            self.provision_task.cancel()
+            self.provision_task = None
+            LOG.info(
+                "external DDP source detected (%s) - LedFX auto-provisioning "
+                "stopped; no action needed unless you actually use LedFX",
+                src_ip,
+            )
+
     def _kick_provisioning(self) -> None:
-        ledfx_url = str(self.options.get("ledfx_url", "http://127.0.0.1:8888") or "").strip()
+        ledfx_url = str(self.options.get("ledfx_url") or "").strip()
         ledfx_target = str(self.options.get("ledfx_ddp_target") or "127.0.0.1").strip()
         if not ledfx_url or not self.zones:
+            return
+        if self._external_ddp_source:
+            # Already know the user is streaming from HyperHDR / piccap / a
+            # remote LedFX. Don't restart a doomed provisioning loop on rebuild.
             return
         if self.provision_task is not None and not self.provision_task.done():
             self.provision_task.cancel()
