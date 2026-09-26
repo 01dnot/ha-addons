@@ -39,8 +39,9 @@ Then open the **sidebar panel** to fine-tune the parts only you can know:
 - **Proxy** — the bulb that receives the stream and re-broadcasts it to the
   rest. Every other bulb in the zone must be in direct radio range of it, so
   pick a central, always-powered bulb.
-- **Target fps** — 20 is a good default; 25 is the practical ceiling (also the
-  rate a real Hue Bridge streams at). Lower still looks smooth.
+- **Target fps** — 25 is the default and the protocol's practical ceiling (the
+  rate a real Hue Bridge streams at); 20 also looks smooth if you want less
+  Zigbee airtime.
 - **Brightness** — a global dimmer for the streamed output.
 - **Pause while streaming** — entities turned **off** while the zone streams
   and back **on** afterwards (your room's Adaptive Lighting switch is
@@ -70,7 +71,7 @@ zones:
       - hue_living_room_bulb_2
       - hue_living_room_floor_lamp
     proxy: hue_living_room_bulb_1
-    fps: 20
+    fps: 25
     ddp_port: 4048
     auto_start: true
     idle_timeout_s: 30

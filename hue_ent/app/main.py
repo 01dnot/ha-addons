@@ -163,7 +163,7 @@ class Zone:
         self.proxy: str = cfg.get("proxy") or self.lights[0]
         if self.proxy not in self.lights:
             raise ValueError(f"zone '{self.name}': proxy '{self.proxy}' is not one of its lights")
-        self.fps: float = float(cfg.get("fps") or 20)
+        self.fps: float = float(cfg.get("fps") or 25)
         self.ddp_port: int = int(cfg["ddp_port"])
         self.idle_timeout_s: float = float(cfg.get("idle_timeout_s") or 30)
         self.auto_start: bool = bool(cfg.get("auto_start", True))

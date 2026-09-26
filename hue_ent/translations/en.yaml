@@ -31,7 +31,7 @@ configuration:
       Entertainment zones (max 10 lights each). Per zone: name; lights =
       zigbee2mqtt friendly names in pixel order; proxy = re-broadcasting bulb
       (defaults to the first light; must be in radio range of the others);
-      fps (5-25, default 20); ddp_port = this zone's DDP UDP listen port
+      fps (5-25, default 25 = protocol ceiling); ddp_port = this zone's DDP UDP listen port
       (default 4048 + index); idle_timeout_s = auto-stop after this many
       seconds without DDP, counted from the arm if none ever arrives
       (default 30); auto_start = arm when DDP arrives
