@@ -39,7 +39,8 @@ def desired_config(zone, target_ip: str) -> dict:
         "name": f"Hue {zone.name}",
         "ip_address": target_ip,
         "port": zone.ddp_port,
-        "pixel_count": len(zone.lights),
+        # One DDP pixel per record: N per gradient light, 1 per bulb.
+        "pixel_count": zone.pixel_count,
         "refresh_rate": int(zone.fps),
     }
 

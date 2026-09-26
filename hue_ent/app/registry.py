@@ -50,7 +50,7 @@ IEEE_RE = re.compile(r"0x[0-9a-fA-F]{16}")
 AL_PREFIX = "switch.adaptive_lighting_"
 AL_SUB_SWITCHES = ("sleep_mode_", "adapt_brightness_", "adapt_color_")
 
-MAX_ZONE_LIGHTS = 10  # Hue Entertainment frames carry at most 10 bulbs
+MAX_ZONE_RECORDS = 10  # Hue Entertainment frames carry at most 10 records (bulb OR segment)
 
 
 def _slug(name: str) -> str:
@@ -239,11 +239,16 @@ def build_area_map(areas: list, devices: list, entities: list) -> AreaMap:
 def synthesize_rooms(z2m_lights: dict[str, dict], area_map: AreaMap) -> list[dict]:
     """Group color-capable Philips lights by area into candidate zones.
 
-    ``z2m_lights``: {friendly_name: {"ieee": str, "color": bool}} (from the
-    bridge's view of zigbee2mqtt/bridge/devices).
+    ``z2m_lights``: {friendly_name: {"ieee": str, "color": bool, "segments": int}}
+    (from the bridge's view of zigbee2mqtt/bridge/devices).
 
     Returns a list of room dicts sorted by name:
-      {"name", "lights" (sorted), "pause_entities", "skipped" (non-color or >10)}
+      {"name", "lights" (sorted), "pause_entities", "skipped" (non-color or overflow)}
+
+    A gradient device (segments > 1) consumes N records per frame. The
+    10-per-frame protocol cap counts across both bulbs and segments, so a room
+    with a 7-segment strip fits at most 3 extra bulbs before the last ones
+    overflow to `skipped`.
     """
     rooms: dict[str, dict] = {}
     for friendly_name, info in sorted(z2m_lights.items()):
@@ -251,16 +256,24 @@ def synthesize_rooms(z2m_lights: dict[str, dict], area_map: AreaMap) -> list[dic
         if not area:
             continue
         room = rooms.setdefault(area, {"name": area, "lights": [], "skipped": []})
+        segs = int(info.get("segments") or 1)
         if info.get("color"):
-            room["lights"].append(friendly_name)
+            room["lights"].append((friendly_name, segs))
         else:
             room["skipped"].append(f"{friendly_name} (no color)")
 
     result = []
     for room in sorted(rooms.values(), key=lambda r: r["name"]):
-        if len(room["lights"]) > MAX_ZONE_LIGHTS:
-            room["skipped"] += [f"{fn} (zone full)" for fn in room["lights"][MAX_ZONE_LIGHTS:]]
-            room["lights"] = room["lights"][:MAX_ZONE_LIGHTS]
+        kept: list[str] = []
+        used = 0
+        for fn, segs in room["lights"]:
+            if used + segs > MAX_ZONE_RECORDS:
+                label = f" (needs {segs} segments)" if segs > 1 else ""
+                room["skipped"].append(f"{fn} (zone full{label})")
+                continue
+            kept.append(fn)
+            used += segs
+        room["lights"] = kept
         if not room["lights"]:
             continue
         al = area_map.al_switches.get(_slug(room["name"]))

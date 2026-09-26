@@ -158,7 +158,7 @@ def test_zone_is_capped_at_ten_lights():
         devices.append(device(f"d{i}", [["mqtt", f"zigbee2mqtt_{ieee}"]], "living_room"))
         lights[f"Living {i:02d}"] = light(ieee)
     _, rooms = discover(devices, lights=lights)
-    assert len(rooms[0]["lights"]) == registry.MAX_ZONE_LIGHTS
+    assert len(rooms[0]["lights"]) == registry.MAX_ZONE_RECORDS
     assert rooms[0]["skipped"] == ["Living 10 (zone full)", "Living 11 (zone full)"]
 
 

@@ -54,6 +54,90 @@ def load_options() -> dict:
         return json.load(handle)
 
 
+# Segment counts for known Hue gradient devices, keyed by either the Zigbee
+# ``model_id`` (LCX001, ...) or the Z2M ``definition.model`` (Signify article
+# number, e.g. 929002422702). Anything else with a ``gradient`` expose but no
+# entry here falls back to DEFAULT_GRADIENT_SEGMENTS - 7, which fits the
+# LCX001/003/004 TV strip family (the most common case).
+GRADIENT_SEGMENTS_BY_MODEL: dict[str, int] = {
+    # TV strips (7 segments) - LCX001 = 55", LCX002 = 65", LCX003 = 75", LCX004 = 55" newer
+    "LCX001": 7, "LCX002": 7, "LCX003": 7, "LCX004": 7,
+    "929002422702": 7,  # Hue Play gradient lightstrip 55 (article number)
+    # PC strips (10 segments) - Bifrost's HueLightstripPc archetype
+    "LCX005": 10, "LCX006": 10, "LCX007": 10,
+    # Signe gradient floor/table (5 segments)
+    "915005987201": 5, "4080248U9": 5, "4080148U9": 5,
+}
+DEFAULT_GRADIENT_SEGMENTS = 7
+
+
+def _segments_for(dev: dict, has_gradient: bool) -> int:
+    """How many independently addressable segments this device exposes.
+
+    Consults the Zigbee ``model_id`` first (LCX001, ...) then the Z2M
+    ``definition.model`` (article number), so both spellings hit the table.
+    """
+    if not has_gradient:
+        return 1
+    definition = dev.get("definition") or {}
+    zigbee_model = str(dev.get("model_id") or "").upper()
+    def_model = str(definition.get("model") or "").upper()
+    return (
+        GRADIENT_SEGMENTS_BY_MODEL.get(zigbee_model)
+        or GRADIENT_SEGMENTS_BY_MODEL.get(def_model)
+        or DEFAULT_GRADIENT_SEGMENTS
+    )
+
+
+def parse_z2m_devices(devices: list) -> tuple[dict[str, int], dict[str, dict]]:
+    """Extract (nwk-map, Philips-light-info) from a zigbee2mqtt bridge/devices payload.
+
+    Returns:
+      nwk_map:    {friendly_name: network_address}, for every device with one
+      lights_map: {friendly_name: {"ieee": ..., "color": ..., "segments": ...,
+                                    "model": ...}} for every Philips light seen
+
+    A ``gradient`` feature in the exposes marks a multi-segment device
+    (Hue Play Gradient Lightstrip and family); segment counts come from a
+    per-model table, with a 7-segment fallback for unknown gradient devices.
+    """
+    nwk_map: dict[str, int] = {}
+    lights: dict[str, dict] = {}
+    for dev in devices:
+        fn = dev.get("friendly_name")
+        if fn and dev.get("network_address") is not None:
+            nwk_map[fn] = dev["network_address"]
+        definition = dev.get("definition") or {}
+        if not fn or definition.get("vendor") != "Philips":
+            continue
+        has_color = False
+        is_light = False
+        has_gradient = False
+        for expose in definition.get("exposes") or []:
+            if expose.get("type") == "light":
+                is_light = True
+                for feature in expose.get("features") or []:
+                    name = feature.get("name")
+                    if name == "color_xy":
+                        has_color = True
+                    elif name == "gradient":
+                        has_gradient = True
+            # z2m sometimes lists gradient as a top-level expose alongside the
+            # light expose, not nested inside its features - accept both.
+            elif expose.get("name") == "gradient":
+                has_gradient = True
+        if is_light:
+            lights[fn] = {
+                "ieee": str(dev.get("ieee_address", "")).lower(),
+                "color": has_color,
+                "gradient": has_gradient,
+                "segments": _segments_for(dev, has_gradient),
+                "model": str(definition.get("model") or ""),
+                "zigbee_model": str(dev.get("model_id") or ""),
+            }
+    return nwk_map, lights
+
+
 class Zone:
     def __init__(self, cfg: dict):
         self.name: str = cfg["name"]
@@ -61,10 +145,20 @@ class Zone:
         self.lights: list[str] = list(cfg["lights"])
         if not self.lights:
             raise ValueError(f"zone '{self.name}' has no lights")
-        if len(self.lights) > protocol.MAX_LIGHTS_PER_FRAME:
+        light_meta = cfg.get("light_meta") or {}
+        self.segments: dict[str, int] = {
+            fn: max(1, int((light_meta.get(fn) or {}).get("segments") or 1))
+            for fn in self.lights
+        }
+        # A gradient segment is one Zigbee record just like a whole bulb, so the
+        # 10-per-frame protocol cap counts across both. A 7-segment gradient
+        # strip + up to 3 other bulbs fits; +4 or more does not.
+        self.records_per_frame: int = sum(self.segments.values())
+        if self.records_per_frame > protocol.MAX_RECORDS_PER_FRAME:
             raise ValueError(
-                f"zone '{self.name}' has {len(self.lights)} lights; the protocol caps a zone at "
-                f"{protocol.MAX_LIGHTS_PER_FRAME}"
+                f"zone '{self.name}' needs {self.records_per_frame} records/frame "
+                f"({len(self.lights)} lights, segments={list(self.segments.values())}); "
+                f"the protocol caps a zone at {protocol.MAX_RECORDS_PER_FRAME}"
             )
         self.proxy: str = cfg.get("proxy") or self.lights[0]
         if self.proxy not in self.lights:
@@ -75,6 +169,11 @@ class Zone:
         self.auto_start: bool = bool(cfg.get("auto_start", True))
         self.pause_entities: list[str] = [e for e in (cfg.get("pause_entities") or []) if e]
         self.brightness_scale: float = float(cfg.get("brightness_scale") or 1.0)
+
+    @property
+    def pixel_count(self) -> int:
+        """DDP pixels expected per frame: one per bulb, N per gradient light."""
+        return self.records_per_frame
 
     @property
     def switch_command_topic(self) -> str:
@@ -197,7 +296,7 @@ class ZoneRunner:
         self._ticker = asyncio.create_task(self._run_ticker())
 
     async def _arm_ritual(self) -> None:
-        """Stop-all, then per light: attribute write + sequence sync."""
+        """Stop-all, then per light: attribute write + sequence sync (+ segment map)."""
         for fn in self.zone.lights:
             await self.bridge.publish(f"{Z2M_BASE}/{fn}/set", protocol.sync_payload(self.counter))
             await asyncio.sleep(0.05)
@@ -205,6 +304,18 @@ class ZoneRunner:
         for fn in self.zone.lights:
             await self.bridge.publish(f"{Z2M_BASE}/{fn}/set", protocol.arm_write_payload())
             await asyncio.sleep(0.15)
+            # A gradient device gets its segments assigned virtual addresses
+            # nwk..nwk+N-1 (Bifrost convention), used in every subsequent
+            # segment-mode record. Ordinary bulbs reply "Command Not Supported"
+            # to CMD_SEGMENT_MAP - harmless but noisy, so we skip them.
+            segs = self.zone.segments[fn]
+            nwk = self.bridge.nwk.get(fn)
+            if segs > 1 and nwk is not None:
+                virtual_addrs = [(nwk + i) & 0xFFFF for i in range(segs)]
+                await self.bridge.publish(
+                    f"{Z2M_BASE}/{fn}/set", protocol.segment_map_payload(virtual_addrs)
+                )
+                await asyncio.sleep(0.15)
             await self.bridge.publish(f"{Z2M_BASE}/{fn}/set", protocol.sync_payload(self.counter))
             await asyncio.sleep(0.15)
 
@@ -241,8 +352,18 @@ class ZoneRunner:
         records = []
         for fn in self.zone.lights:
             nwk = self.bridge.nwk.get(fn)
-            if nwk is not None:
+            if nwk is None:
+                continue
+            segs = self.zone.segments[fn]
+            if segs == 1:
                 records.append(protocol.light_record(nwk, 1, 1743, 1631))  # dim D65
+            else:
+                for i in range(segs):
+                    records.append(
+                        protocol.light_record(
+                            (nwk + i) & 0xFFFF, 1, 1743, 1631, mode=protocol.MODE_SEGMENT
+                        )
+                    )
         if records:
             self.counter += 1
             await self.bridge.publish(
@@ -313,15 +434,34 @@ class ZoneRunner:
 
     async def _send_frame(self, frame: list[tuple[int, int, int]], smoothing: int) -> None:
         records = []
-        for i, fn in enumerate(self.zone.lights):
+        # Pixel index walks the DDP frame; a gradient light with N segments
+        # consumes N consecutive pixels so the effect renders as a gradient.
+        pixel_idx = 0
+        for fn in self.zone.lights:
+            segs = self.zone.segments[fn]
             nwk = self.bridge.nwk.get(fn)
             if nwk is None:
+                pixel_idx += segs  # keep the frame alignment even if we can't send
                 continue
-            r, g, b = frame[i] if i < len(frame) else frame[-1]
-            bri, x12, y12 = color.rgb8_to_entertainment(
-                r, g, b, brightness_scale=self.zone.brightness_scale
-            )
-            records.append(protocol.light_record(nwk, bri, x12, y12))
+            if segs == 1:
+                r, g, b = frame[pixel_idx] if pixel_idx < len(frame) else frame[-1]
+                bri, x12, y12 = color.rgb8_to_entertainment(
+                    r, g, b, brightness_scale=self.zone.brightness_scale
+                )
+                records.append(protocol.light_record(nwk, bri, x12, y12))
+            else:
+                for i in range(segs):
+                    px = pixel_idx + i
+                    r, g, b = frame[px] if px < len(frame) else frame[-1]
+                    bri, x12, y12 = color.rgb8_to_entertainment(
+                        r, g, b, brightness_scale=self.zone.brightness_scale
+                    )
+                    records.append(
+                        protocol.light_record(
+                            (nwk + i) & 0xFFFF, bri, x12, y12, mode=protocol.MODE_SEGMENT
+                        )
+                    )
+            pixel_idx += segs
         if not records:
             return
         self.counter += 1
@@ -374,6 +514,14 @@ class Bridge:
             old_slugs = set(self.zones)
             zones: dict[str, Zone] = {}
             for cfg in configs:
+                # Enrich every cfg with per-light segment info from what we
+                # learned in bridge/devices, so a gradient strip renders as
+                # N pixels instead of one.
+                cfg = dict(cfg)
+                cfg["light_meta"] = {
+                    fn: {"segments": (self.z2m_lights.get(fn) or {}).get("segments", 1)}
+                    for fn in cfg.get("lights", [])
+                }
                 try:
                     zone = Zone(cfg)
                     zones[zone.slug] = zone
@@ -387,7 +535,7 @@ class Bridge:
                 runner = self.runners[slug]
                 try:
                     transport, proto = await loop.create_datagram_endpoint(
-                        lambda z=zone, r=runner: DdpProtocol(len(z.lights), r.on_ddp_activity),
+                        lambda z=zone, r=runner: DdpProtocol(z.pixel_count, r.on_ddp_activity),
                         local_addr=("0.0.0.0", zone.ddp_port),
                     )
                 except OSError as exc:
@@ -395,9 +543,11 @@ class Bridge:
                     continue
                 runner.ddp = proto
                 runner.ddp_transport = transport
+                grad = [f"{fn} x{n}" for fn, n in zone.segments.items() if n > 1]
                 LOG.info(
-                    "[%s] DDP listener on :%d (%d px, %g fps)",
-                    zone.name, zone.ddp_port, len(zone.lights), zone.fps,
+                    "[%s] DDP listener on :%d (%d px, %g fps%s)",
+                    zone.name, zone.ddp_port, zone.pixel_count, zone.fps,
+                    f", gradient: {', '.join(grad)}" if grad else "",
                 )
 
             if self.client is not None:
@@ -548,27 +698,8 @@ class Bridge:
         except Exception:
             LOG.exception("failed to parse bridge/devices")
             return
-        lights: dict[str, dict] = {}
-        for dev in devices:
-            fn = dev.get("friendly_name")
-            if fn and dev.get("network_address") is not None:
-                self.nwk[fn] = dev["network_address"]
-            definition = dev.get("definition") or {}
-            if not fn or definition.get("vendor") != "Philips":
-                continue
-            has_color = False
-            is_light = False
-            for expose in definition.get("exposes") or []:
-                if expose.get("type") == "light":
-                    is_light = True
-                    for feature in expose.get("features") or []:
-                        if feature.get("name") == "color_xy":
-                            has_color = True
-            if is_light:
-                lights[fn] = {
-                    "ieee": str(dev.get("ieee_address", "")).lower(),
-                    "color": has_color,
-                }
+        nwk, lights = parse_z2m_devices(devices)
+        self.nwk.update(nwk)
         self.z2m_lights = lights
         LOG.info(
             "device list updated (%d addresses, %d Philips lights)", len(self.nwk), len(lights)
