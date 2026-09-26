@@ -44,7 +44,11 @@ homeassistant_api: true
 options:
   log_level: info
   auto_zones: true
-  ledfx_url: "http://127.0.0.1:8888"
+  # Empty by default: HyperHDR / piccap / any generic DDP sender needs no
+  # provisioning. Set to LedFX's base URL (typically http://127.0.0.1:8888
+  # for a co-located LedFX install) to auto-create a matching DDP device per
+  # zone.
+  ledfx_url: ""
   ledfx_ddp_target: "127.0.0.1"
   zones: []
 
@@ -58,10 +62,11 @@ schema:
   # every zone by hand below.
   auto_zones: bool
   # LedFX API base URL for auto-provisioning: the app creates one matching DDP
-  # device per zone in LedFX (named "Hue <zone>"), so there's nothing to mirror
-  # by hand. The default reaches the LedFX app on the same host. Set it to an
-  # empty string to disable auto-provisioning.
-  ledfx_url: str
+  # device per zone in LedFX (named "Hue <zone>"). Empty by default; set to
+  # http://127.0.0.1:8888 (or wherever LedFX runs) to enable. HyperHDR,
+  # piccap and other DDP sources need no provisioning - just aim them at
+  # the zone's ddp_port.
+  ledfx_url: str?
   # The address LedFX should send DDP to - i.e. where THIS app is reachable
   # from LedFX. Leave at 127.0.0.1 when both apps run on the same host.
   ledfx_ddp_target: str
@@ -82,6 +87,6 @@ schema:
       ddp_port: port?
       idle_timeout_s: int(5,600)?
       auto_start: bool?
-      brightness_scale: float(0.05,1.0)?
+      brightness_scale: float(0.05,3.0)?
       pause_entities:
         - str?

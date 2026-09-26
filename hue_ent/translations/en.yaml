@@ -14,14 +14,17 @@ configuration:
   ledfx_url:
     name: LedFX URL
     description: >-
-      LedFX API base URL. On start the app auto-creates one matching DDP device
-      per zone in LedFX (named "Hue <zone>") - no manual mirroring. Default
-      reaches the LedFX app on this host. Set empty to disable.
+      Only set this if you're using LedFX - then the app auto-creates one
+      matching DDP device per zone named "Hue <zone>". Typical value:
+      http://127.0.0.1:8888 (LedFX on the same host). Leave EMPTY for
+      HyperHDR, piccap or any other DDP source - just point them at each
+      zone's ddp_port (shown in the sidebar panel), no provisioning needed.
   ledfx_ddp_target:
     name: LedFX DDP target
     description: >-
-      The address LedFX sends pixel data to (where this app listens). Leave at
-      127.0.0.1 unless LedFX runs on a different machine.
+      Only relevant when LedFX URL is set. The address LedFX sends pixel data
+      to (where this app listens). Leave at 127.0.0.1 unless LedFX runs on a
+      different machine.
   zones:
     name: Zones
     description: >-
@@ -32,6 +35,8 @@ configuration:
       (default 4048 + index); idle_timeout_s = auto-stop after this many
       seconds without DDP, counted from the arm if none ever arrives
       (default 30); auto_start = arm when DDP arrives
-      (default true); brightness_scale = global output dimmer (0.05-1.0);
+      (default true); brightness_scale = global output multiplier (0.05-3.0;
+      1.0 pass-through; >1 boosts perceived brightness and clips at max, like
+      Hue Sync's "vibrancy");
       pause_entities = entities switched off while streaming (e.g. your
       Adaptive Lighting switch) and restored afterwards.
