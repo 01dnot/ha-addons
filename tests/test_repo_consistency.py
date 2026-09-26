@@ -24,7 +24,7 @@ def manifest(app: str) -> dict:
 
 
 def test_every_app_directory_is_discovered():
-    assert APPS == ["frame_gallery", "hue_ent", "ledfx", "local_faces"]
+    assert APPS == ["hue_ent"]
 
 
 @pytest.mark.parametrize("app", APPS)

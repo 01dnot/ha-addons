@@ -1,6 +1,6 @@
 # Home Assistant app repository metadata.
 # Install: Settings -> Apps -> App Store -> (top-right) Repositories ->
-# paste this repo's URL -> "Frame Gallery" appears under this name.
-name: Adam Oberley's Home Assistant Apps
-url: https://github.com/adamoberley/ha-addons
-maintainer: Adam Oberley <adamoberley@damascus.net>
+# paste this repo's URL -> "Hue Entertainment" appears under this name.
+name: Hue Entertainment (gradient fork)
+url: https://github.com/01dnot/ha-addons
+maintainer: Daniel Notland <danielnotland@me.com>
