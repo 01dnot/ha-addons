@@ -570,18 +570,26 @@ class Bridge:
         """A non-loopback DDP source is delivering frames - the user has
         their own sender (HyperHDR, piccap, remote LedFX). Stop the LedFX
         auto-provisioning loop so the log doesn't fill with reachability
-        errors while their real setup works fine."""
+        errors while their real setup works fine.
+
+        Logged unconditionally on the first frame from a new source so a
+        human debugging "is HyperHDR actually reaching me?" always has a
+        yes/no answer in the log, even when ledfx_url is empty (nothing
+        to cancel).
+        """
         if self._external_ddp_source == src_ip:
             return
         self._external_ddp_source = src_ip
+        cancelled = False
         if self.provision_task is not None and not self.provision_task.done():
             self.provision_task.cancel()
             self.provision_task = None
-            LOG.info(
-                "external DDP source detected (%s) - LedFX auto-provisioning "
-                "stopped; no action needed unless you actually use LedFX",
-                src_ip,
-            )
+            cancelled = True
+        LOG.info(
+            "external DDP source detected (%s)%s",
+            src_ip,
+            " - LedFX auto-provisioning stopped" if cancelled else "",
+        )
 
     def _kick_provisioning(self) -> None:
         ledfx_url = str(self.options.get("ledfx_url") or "").strip()
