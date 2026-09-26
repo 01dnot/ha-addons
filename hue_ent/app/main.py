@@ -169,6 +169,9 @@ class Zone:
         self.auto_start: bool = bool(cfg.get("auto_start", True))
         self.pause_entities: list[str] = [e for e in (cfg.get("pause_entities") or []) if e]
         self.brightness_scale: float = float(cfg.get("brightness_scale") or 1.0)
+        # Protocol minimum is 1; raise (~20-50) if your strip firmware drops
+        # to a warm-white fallback at very low computed brightness.
+        self.bri_floor: int = max(1, min(2047, int(cfg.get("bri_floor") or 1)))
 
     @property
     def pixel_count(self) -> int:
@@ -453,7 +456,8 @@ class ZoneRunner:
             if segs == 1:
                 r, g, b = frame[pixel_idx] if pixel_idx < len(frame) else frame[-1]
                 bri, x12, y12 = color.rgb8_to_entertainment(
-                    r, g, b, brightness_scale=self.zone.brightness_scale
+                    r, g, b, brightness_scale=self.zone.brightness_scale,
+                    bri_floor=self.zone.bri_floor,
                 )
                 records.append(protocol.light_record(nwk, bri, x12, y12))
             else:
@@ -461,7 +465,8 @@ class ZoneRunner:
                     px = pixel_idx + i
                     r, g, b = frame[px] if px < len(frame) else frame[-1]
                     bri, x12, y12 = color.rgb8_to_entertainment(
-                        r, g, b, brightness_scale=self.zone.brightness_scale
+                        r, g, b, brightness_scale=self.zone.brightness_scale,
+                        bri_floor=self.zone.bri_floor,
                     )
                     records.append(
                         protocol.light_record(

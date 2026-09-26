@@ -14,9 +14,18 @@ D65 = (0.3127, 0.3290)
 
 
 def rgb8_to_entertainment(
-    r: int, g: int, b: int, gamma: float = 2.2, brightness_scale: float = 1.0
+    r: int, g: int, b: int, gamma: float = 2.2,
+    brightness_scale: float = 1.0, bri_floor: int = 1,
 ) -> tuple[int, int, int]:
-    """Return (bri11, x12, y12) for one 8-bit-per-channel sRGB pixel."""
+    """Return (bri11, x12, y12) for one 8-bit-per-channel sRGB pixel.
+
+    ``bri_floor`` sets the minimum brightness sent (out of 2047). The
+    default 1 is the protocol minimum (0 is undefined on some firmware).
+    Raise it (~20-50) if your strip's firmware drops to a warm-white
+    fallback on very low brightness - e.g. when the scene is nearly
+    black and the scaled value would otherwise sit under the strip's
+    color-rendering PWM floor.
+    """
     rl = (r / 255.0) ** gamma
     gl = (g / 255.0) ** gamma
     bl = (b / 255.0) ** gamma
@@ -28,7 +37,8 @@ def rgb8_to_entertainment(
     total = big_x + big_y + big_z
     x, y = (big_x / total, big_y / total) if total > 0 else D65
 
-    bri = max(1, min(2047, round(max(rl, gl, bl) * 2047 * brightness_scale)))
+    floor = max(1, min(2047, int(bri_floor)))
+    bri = max(floor, min(2047, round(max(rl, gl, bl) * 2047 * brightness_scale)))
     x12 = max(0, min(4095, round(x / WIDE_GAMUT_MAX_X * 4095)))
     y12 = max(0, min(4095, round(y / WIDE_GAMUT_MAX_Y * 4095)))
     return bri, x12, y12

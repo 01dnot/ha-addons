@@ -88,5 +88,6 @@ schema:
       idle_timeout_s: int(5,600)?
       auto_start: bool?
       brightness_scale: float(0.05,3.0)?
+      bri_floor: int(1,200)?
       pause_entities:
         - str?

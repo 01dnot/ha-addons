@@ -37,6 +37,8 @@ configuration:
       (default 30); auto_start = arm when DDP arrives
       (default true); brightness_scale = global output multiplier (0.05-3.0;
       1.0 pass-through; >1 boosts perceived brightness and clips at max, like
-      Hue Sync's "vibrancy");
+      Hue Sync's "vibrancy"); bri_floor = minimum brightness value sent
+      (1-200, default 1 = protocol minimum); raise to ~20-50 if the strip
+      firmware drops to warm-white on very-low computed brightness;
       pause_entities = entities switched off while streaming (e.g. your
       Adaptive Lighting switch) and restored afterwards.
