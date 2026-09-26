@@ -236,6 +236,10 @@ class ZoneRunner:
         # stream - only once it stops (>5 s gap) and a new one begins.
         self._suppress_auto = False
         self._prev_rx = 0.0
+        # Ticker sleeps on this event; each DDP arrival wakes it, so a fresh
+        # frame is sent within a rate-limited slot rather than waiting up to
+        # one full tick interval. Rate-limit still enforces the fps cap.
+        self._frame_event = asyncio.Event()
 
     def on_ddp_activity(self, addr=None) -> None:
         now = time.monotonic()
@@ -253,6 +257,9 @@ class ZoneRunner:
             self.bridge.notify_external_ddp(addr[0])
         if not self.armed and self.zone.auto_start and not self._suppress_auto:
             self.bridge.schedule_arm(self.zone.slug, reason="ddp")
+        # Wake the ticker so a fresh frame goes out on its next rate-limit
+        # slot rather than sitting through the rest of an interval sleep.
+        self._frame_event.set()
 
     @property
     def stats(self) -> dict:
@@ -401,15 +408,34 @@ class ZoneRunner:
     # -- streaming -------------------------------------------------------
 
     async def _run_ticker(self) -> None:
+        """Event-driven send loop: wakes on DDP arrival (or on a
+        short timeout so idle-checks and keepalives still fire),
+        then rate-limits to zone.fps.
+
+        The old implementation slept a full interval between sends,
+        so a DDP frame that arrived right after a tick sat waiting up
+        to ~50 ms before going out. Waking on arrival cuts that
+        (~20-25 ms average at 20-25 fps) with no other tradeoff:
+        the fps cap is still enforced by the min-interval sleep, and
+        latest-wins dedup in DdpProtocol keeps us from
+        bursting past the source rate.
+        """
         interval = 1.0 / self.zone.fps
         smoothing = protocol.smoothing_for_fps(self.zone.fps)
-        next_tick = time.monotonic()
+        # Cap the idle wait so keepalive + idle-timeout still fire
+        # when HyperHDR is silent. A short cap here is fine - the
+        # ticker just runs a few checks and goes back to sleep.
+        idle_wait = min(interval, 0.5)
+        self._frame_event.clear()
         try:
             while self.armed:
-                now = time.monotonic()
-                if now < next_tick:
-                    await asyncio.sleep(next_tick - now)
-                next_tick = max(next_tick + interval, time.monotonic())
+                # Wait for the next DDP frame, but no longer than idle_wait
+                # so we still fire keepalives and the idle-timeout check.
+                # Both aliases matter: on Python 3.9-3.10 asyncio.TimeoutError
+                # is distinct from the builtin; from 3.11 they alias.
+                with contextlib.suppress(asyncio.TimeoutError, TimeoutError):
+                    await asyncio.wait_for(self._frame_event.wait(), timeout=idle_wait)
+                self._frame_event.clear()
 
                 ddp = self.ddp
                 # Idle is measured from the last frame, or from the arm when no
@@ -426,7 +452,14 @@ class ZoneRunner:
                 if ddp is None or ddp.latest is None:
                     continue
 
-                frame = ddp.latest
+                # Rate-limit: at most one send per interval. Sleeping AFTER
+                # the event wait keeps this event-driven while still capping
+                # the outbound rate at zone.fps.
+                since_last = time.monotonic() - self._last_zig_send
+                if self._last_zig_send and since_last < interval:
+                    await asyncio.sleep(interval - since_last)
+
+                frame = ddp.latest  # re-read after the sleep; latest-wins
                 fresh = frame != self._last_sent_frame
                 due_keepalive = time.monotonic() - self._last_zig_send >= KEEPALIVE_S
                 if not fresh and not due_keepalive:

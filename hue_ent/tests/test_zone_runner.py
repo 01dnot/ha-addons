@@ -42,6 +42,9 @@ class FakeBridge:
     def schedule_arm(self, slug: str, reason: str) -> None:  # pragma: no cover
         pass
 
+    def notify_external_ddp(self, src_ip: str) -> None:  # pragma: no cover
+        pass
+
 
 def make_runner(idle_timeout_s: float = 0.15, lights=("L1", "L2")):
     zone = main_mod.Zone({
@@ -141,6 +144,52 @@ async def test_a_live_stream_keeps_streaming_and_does_not_disarm():
     payloads = [json.loads(p) for t, p in bridge.published if t.endswith("/L1/set")]
     assert payloads, "expected streamed frames"
     assert all("zclcommand" in p for p in payloads)
+
+
+@pytest.mark.asyncio
+async def test_ddp_arrival_wakes_the_ticker_faster_than_a_full_interval():
+    """The whole point of the event-driven ticker: a fresh frame goes out
+    much sooner than waiting one full fps interval."""
+    runner, _bridge = make_runner(idle_timeout_s=5.0)
+    # Run at 5 fps so one interval is 200 ms - long enough to make the
+    # measurement unambiguous even on a loaded CI runner.
+    runner.zone.fps = 5.0
+    runner.armed = True
+    runner._armed_at = time.monotonic()
+    ddp = FakeDdp(latest=None, last_rx=0.0)
+    runner.ddp = ddp
+
+    ticker = asyncio.ensure_future(runner._run_ticker())
+    await asyncio.sleep(0.05)  # let ticker settle into its wait
+    # Fake a DDP arrival: set the latest frame, bump last_rx, wake the event.
+    ddp.latest = [(255, 0, 0), (0, 255, 0)]
+    ddp.last_rx = time.monotonic()
+    t_arrive = time.monotonic()
+    runner.on_ddp_activity(("192.168.1.10", 4048))
+    # Wait long enough that a wakeup happens, but MUCH less than the 200ms
+    # a fixed-interval sleep would have added.
+    await asyncio.sleep(0.06)
+    t_after_first_send = None
+    if runner._last_zig_send:
+        t_after_first_send = runner._last_zig_send - t_arrive
+    ticker.cancel()
+    await asyncio.gather(ticker, return_exceptions=True)
+
+    assert runner._last_zig_send, "expected the ticker to send after wake"
+    # Sent well within 60ms of the arrival - the old fixed-interval loop
+    # would have made us wait up to 200ms at 5 fps.
+    assert t_after_first_send is not None and t_after_first_send < 0.08, (
+        f"send took {t_after_first_send*1000:.0f}ms after arrival"
+    )
+
+
+@pytest.mark.asyncio
+async def test_on_ddp_activity_sets_the_frame_event():
+    """Direct check that DDP arrival flips the wake signal."""
+    runner, _bridge = make_runner()
+    assert not runner._frame_event.is_set()
+    runner.on_ddp_activity(("192.168.1.10", 4048))
+    assert runner._frame_event.is_set()
 
 
 @pytest.mark.asyncio
