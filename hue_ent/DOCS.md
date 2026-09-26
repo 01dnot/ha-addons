@@ -1,11 +1,18 @@
 # Hue Entertainment
 
-Streams LedFX effects to Philips Hue Zigbee bulbs paired to **zigbee2mqtt** (no
-Hue Bridge) at 20–25 fps. The naive path — one MQTT `set` per bulb per frame —
-tops out around 6 fps and floods the Zigbee queue. This app instead speaks the
-reverse-engineered **Hue Entertainment** protocol: one compact Zigbee frame per
-zone per tick, unicast to a single *proxy* bulb that re-broadcasts to the rest.
-Bulbs interpolate between targets, so 20–25 fps looks continuous.
+Streams pixel data (from LedFX, HyperHDR/piccap, or any DDP source) to Philips
+Hue Zigbee bulbs paired to **zigbee2mqtt** (no Hue Bridge) at 20–25 fps. The
+naive path — one MQTT `set` per bulb per frame — tops out around 6 fps and
+floods the Zigbee queue. This app instead speaks the reverse-engineered
+**Hue Entertainment** protocol: one compact Zigbee frame per zone per tick,
+unicast to a single *proxy* device that re-broadcasts to the rest. Bulbs
+interpolate between targets, so 20–25 fps looks continuous.
+
+**Gradient strips** (Hue Play Gradient Lightstrip and family — LCX001/003/004
+for TV, LCX005/006/007 for PC, Signe floor/table) are driven **per segment**:
+one virtual address per segment, one DDP pixel per segment, so a 55" strip
+renders as 7 pixels instead of one uniform colour. See **Feeding pixels in →
+HyperHDR** below for the intended TV-ambient setup.
 
 ## Requirements
 
@@ -17,10 +24,12 @@ Bulbs interpolate between targets, so 20–25 fps looks continuous.
 ## Zones — automatic
 
 Zones build themselves: on start the app groups your **color-capable Philips
-Hue bulbs by Home Assistant area** — one zone per room — and even picks up each
-room's Adaptive Lighting switch as a pause entity. A zone is capped at **10**
-bulbs (a hard limit of the Zigbee frame format); white-ambiance-only bulbs are
-skipped automatically.
+Hue bulbs and gradient strips by Home Assistant area** — one zone per room —
+and even picks up each room's Adaptive Lighting switch as a pause entity.
+A zone is capped at **10 records** per frame (a hard limit of the Zigbee frame
+format); a plain bulb is one record, a 7-segment gradient strip is seven, so
+a strip + up to 3 bulbs fits, and the 4th bulb overflows to the "skipped"
+list. White-ambiance-only bulbs are skipped automatically.
 
 Then open the **sidebar panel** to fine-tune the parts only you can know:
 
@@ -70,22 +79,71 @@ zones:
       - switch.adaptive_lighting_living_room
 ```
 
-## LedFX setup
+## Feeding pixels in
 
-**Automatic.** On start the app creates one matching **DDP** device per zone in
-LedFX through its API — named **Hue \<zone\>**, with the right port, pixel
-count, and frame rate — so there is nothing to mirror by hand. Just open LedFX
-and put an effect on the zone's device. With `auto_start` on, the zone arms as
-soon as frames flow and releases the lights after `idle_timeout_s` (default
-30 s) once they stop. The same timeout applies to a zone armed by hand — the HA
-switch or the panel's **Test stream** — so one turned on with nothing streaming
-releases the bulbs (and its pause entities) instead of holding them.
+The app listens for **DDP** on one UDP port per zone (the port is shown on
+each card in the sidebar panel — first zone gets `4048`, next `4049`, and so
+on; assignments are sticky). Anything that speaks DDP works.
+
+### HyperHDR (piccap / capture-card ambient TV)
+
+The intended setup for driving a **Hue Play Gradient Lightstrip** behind a TV.
+Nothing in HyperHDR knows about this app — HyperHDR just sends DDP, this app
+translates to Hue Entertainment Zigbee frames.
+
+In HyperHDR:
+
+1. **Remote Control → LED Output → Controller type: `ddp`** (NOT `wled` —
+   that variant expects a real WLED endpoint to answer a JSON handshake and
+   will fail on this app). If your build lacks `ddp`, `udpraw` works too but
+   drops per-frame framing.
+2. **Target IP/Hostname**: the Home Assistant host (where this app runs).
+3. **Port**: whatever the zone card shows (typically `4048`).
+4. **RGB byte order**: `RGB`.
+5. **Hardware LED count** (in **LED Layout**, separate section): **7** for a
+   Hue Play Gradient Lightstrip 55/65/75" (LCX001/003/004); **10** for the
+   PC-strip variants (LCX005/006/007). Match the pixel_count the addon logs on
+   start (`DDP listener on :4048 (7 px, ...)`).
+6. **LED Layout**: arrange the 7 (or 10) virtual LEDs around the TV edge in
+   the order the strip is physically mounted. HyperHDR's classic layout of
+   "top, right, bottom, left" works if you place them the same way.
+
+Tuning knobs that matter for ambient TV:
+
+- **HyperHDR → Image Processing → Smoothing → Settling time**: default 200 ms
+  is meant to hide flicker but feels laggy. Lower to **60–80 ms** for a snappy
+  Hue-Sync-like reaction; 40 ms if you don't mind occasional flicker on very
+  noisy sources. Update frequency: 25 Hz (matches this app's ceiling).
+- **HyperHDR → Image Processing → Color calibration → Saturation gain**: bump
+  to **1.5–2.0** for the "vibrant" look Hue Sync ships with (default 1.0 is
+  quite muted on real content).
+- **HyperHDR → Backlight/Threshold**: keep dark scenes from driving the strip
+  toward grey.
+
+If the strip looks dimmer than you're used to from a Hue Bridge + Hue Sync,
+raise the zone's `brightness_scale` in the sidebar panel (or the addon
+config) from `1.0` up to `2.0–3.0`. This app derives per-pixel brightness
+from *linear* RGB (physically correct: mid-grey ~22 %), while Hue Sync drives
+the strip closer to *perceptual* brightness (mid-grey ~50 %). Boosting past
+1.0 clips highlights early but pushes mid-tones up toward the Hue Sync feel.
+
+### LedFX (audio-reactive)
+
+Set `ledfx_url` to your LedFX instance (`http://127.0.0.1:8888` when
+co-located). The app then auto-creates one matching **DDP** device per zone
+through the LedFX API — named **Hue \<zone\>**, with the right port, pixel
+count, and frame rate — so there is nothing to mirror by hand. Just open
+LedFX and put an effect on the zone's device. With `auto_start` on, the zone
+arms as soon as frames flow and releases the lights after `idle_timeout_s`
+(default 30 s) once they stop. The same timeout applies to a zone armed by
+hand — the HA switch or the panel's **Test stream** — so one turned on with
+nothing streaming releases the bulbs (and its pause entities) instead of
+holding them.
 
 Details and knobs:
 
-- `ledfx_url` (default `http://127.0.0.1:8888`, the LedFX app on the same
-  host) — set it to a remote LedFX instance, or to an **empty string** to
-  disable auto-provisioning and manage devices yourself.
+- `ledfx_url` — empty by default (HyperHDR / piccap / manual DDP needs
+  nothing). Set to LedFX's base URL to enable auto-provisioning.
 - `ledfx_ddp_target` (default `127.0.0.1`) — the address LedFX sends pixels
   to, i.e. where this app runs. Only change it if LedFX runs on a different
   machine.
@@ -93,8 +151,16 @@ Details and knobs:
   untouched (effect included). If you change a zone's lights, port, or fps, its
   LedFX device is recreated to match — re-pick the effect afterwards.
 - If you remove a zone, delete its old `Hue <zone>` device in LedFX yourself.
-- Managing devices manually instead: any DDP sender works — point it at the
-  zone's `ddp_port` with pixel count = number of lights.
+- If `ledfx_url` is set but a non-loopback DDP source (HyperHDR, piccap, a
+  remote LedFX) is actually feeding a zone, the app stops the LedFX
+  provisioning retry loop after the first frame arrives — one log line, no
+  further noise.
+
+### Other DDP senders
+
+Any UDP DDP sender works — point it at the zone's `ddp_port` with pixel count
+matching what the addon logs (`N px` for that zone). E1.31 / sACN, Art-Net,
+and pure UDP-raw are **not** supported — the receiver expects DDP framing.
 
 ## Home Assistant control
 
